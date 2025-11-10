@@ -2,14 +2,15 @@
 
 namespace App\Models;
 
+use App\Traits\ClearsGlobalSearchCache;
+use App\Traits\HasSafeStringAttribute;
 use Illuminate\Database\Eloquent\Casts\Attribute;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class StandaloneRedis extends BaseModel
 {
-    use HasFactory, SoftDeletes;
+    use ClearsGlobalSearchCache, HasFactory, HasSafeStringAttribute, SoftDeletes;
 
     protected $guarded = [];
 
@@ -24,7 +25,6 @@ class StandaloneRedis extends BaseModel
                 'host_path' => null,
                 'resource_id' => $database->id,
                 'resource_type' => $database->getMorphClass(),
-                'is_readonly' => true,
             ]);
         });
         static::forceDeleting(function ($database) {
@@ -38,6 +38,17 @@ class StandaloneRedis extends BaseModel
                 $database->forceFill(['last_online_at' => now()]);
             }
         });
+
+        static::retrieved(function ($database) {
+            if (! $database->redis_username) {
+                $database->redis_username = 'default';
+            }
+        });
+    }
+
+    public static function ownedByCurrentTeam()
+    {
+        return StandaloneRedis::whereRelation('environment.project.team', 'id', currentTeam()->id)->orderBy('name');
     }
 
     protected function serverStatus(): Attribute
@@ -90,7 +101,7 @@ class StandaloneRedis extends BaseModel
         return database_configuration_dir()."/{$this->uuid}";
     }
 
-    public function delete_configurations()
+    public function deleteConfigurations()
     {
         $server = data_get($this, 'destination.server');
         $workdir = $this->workdir();
@@ -99,8 +110,9 @@ class StandaloneRedis extends BaseModel
         }
     }
 
-    public function delete_volumes(Collection $persistentStorages)
+    public function deleteVolumes()
     {
+        $persistentStorages = $this->persistentStorages()->get() ?? collect();
         if ($persistentStorages->count() === 0) {
             return;
         }
@@ -164,6 +176,11 @@ class StandaloneRedis extends BaseModel
         return data_get($this, 'environment.project.team');
     }
 
+    public function sslCertificates()
+    {
+        return $this->morphMany(SslCertificate::class, 'resource');
+    }
+
     public function link()
     {
         if (data_get($this, 'environment.project.uuid')) {
@@ -193,8 +210,8 @@ class StandaloneRedis extends BaseModel
     {
         return Attribute::make(
             get: fn () => is_null($this->ports_mappings)
-                ? []
-                : explode(',', $this->ports_mappings),
+            ? []
+            : explode(',', $this->ports_mappings),
 
         );
     }
@@ -216,9 +233,17 @@ class StandaloneRedis extends BaseModel
         return new Attribute(
             get: function () {
                 $redis_version = $this->getRedisVersion();
-                $username_part = version_compare($redis_version, '6.0', '>=') ? "{$this->redis_username}:" : '';
+                $username_part = version_compare($redis_version, '6.0', '>=') ? rawurlencode($this->redis_username).':' : '';
+                $encodedPass = rawurlencode($this->redis_password);
+                $scheme = $this->enable_ssl ? 'rediss' : 'redis';
+                $port = $this->enable_ssl ? 6380 : 6379;
+                $url = "{$scheme}://{$username_part}{$encodedPass}@{$this->uuid}:{$port}/0";
 
-                return "redis://{$username_part}{$this->redis_password}@{$this->uuid}:6379/0";
+                if ($this->enable_ssl && $this->ssl_mode === 'verify-ca') {
+                    $url .= '?cacert=/etc/ssl/certs/coolify-ca.crt';
+                }
+
+                return $url;
             }
         );
     }
@@ -228,10 +253,21 @@ class StandaloneRedis extends BaseModel
         return new Attribute(
             get: function () {
                 if ($this->is_public && $this->public_port) {
+                    $serverIp = $this->destination->server->getIp;
+                    if (empty($serverIp)) {
+                        return null;
+                    }
                     $redis_version = $this->getRedisVersion();
-                    $username_part = version_compare($redis_version, '6.0', '>=') ? "{$this->redis_username}:" : '';
+                    $username_part = version_compare($redis_version, '6.0', '>=') ? rawurlencode($this->redis_username).':' : '';
+                    $encodedPass = rawurlencode($this->redis_password);
+                    $scheme = $this->enable_ssl ? 'rediss' : 'redis';
+                    $url = "{$scheme}://{$username_part}{$encodedPass}@{$serverIp}:{$this->public_port}/0";
 
-                    return "redis://{$username_part}{$this->redis_password}@{$this->destination->server->getIp}:{$this->public_port}/0";
+                    if ($this->enable_ssl && $this->ssl_mode === 'verify-ca') {
+                        $url .= '?cacert=/etc/ssl/certs/coolify-ca.crt';
+                    }
+
+                    return $url;
                 }
 
                 return null;
@@ -346,7 +382,12 @@ class StandaloneRedis extends BaseModel
             get: function () {
                 $username = $this->runtime_environment_variables()->where('key', 'REDIS_USERNAME')->first();
                 if (! $username) {
-                    return null;
+                    $this->runtime_environment_variables()->create([
+                        'key' => 'REDIS_USERNAME',
+                        'value' => 'default',
+                    ]);
+
+                    return 'default';
                 }
 
                 return $username->value;
@@ -357,6 +398,13 @@ class StandaloneRedis extends BaseModel
     public function environment_variables()
     {
         return $this->morphMany(EnvironmentVariable::class, 'resourceable')
-            ->orderBy('key', 'asc');
+            ->orderByRaw("
+                CASE 
+                    WHEN LOWER(key) LIKE 'service_%' THEN 1
+                    WHEN is_required = true AND (value IS NULL OR value = '') THEN 2
+                    ELSE 3
+                END,
+                LOWER(key) ASC
+            ");
     }
 }

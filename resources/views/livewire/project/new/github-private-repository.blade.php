@@ -15,9 +15,9 @@
     </div>
     <div class="pb-4">Deploy any public or private Git repositories through a GitHub App.</div>
     @if ($github_apps->count() !== 0)
-        <h2 class="pt-4 pb-4">Select a Github App</h2>
         <div class="flex flex-col gap-2">
             @if ($current_step === 'github_apps')
+                <h2 class="pt-4 pb-4">Select a Github App</h2>
                 <div class="flex flex-col justify-center gap-2 text-left">
                     @foreach ($github_apps as $ghapp)
                         <div class="flex">
@@ -43,25 +43,28 @@
             @endif
             @if ($current_step === 'repository')
                 @if ($repositories->count() > 0)
-                    <div class="flex items-end gap-2">
-                        <x-forms.select class="w-full" label="Repository" wire:model="selected_repository_id">
-                            @foreach ($repositories as $repo)
-                                @if ($loop->first)
-                                    <option selected value="{{ data_get($repo, 'id') }}">
-                                        {{ data_get($repo, 'name') }}
-                                    </option>
-                                @else
-                                    <option value="{{ data_get($repo, 'id') }}">{{ data_get($repo, 'name') }}
-                                    </option>
-                                @endif
-                            @endforeach
-                        </x-forms.select>
+                    <div class="flex flex-col gap-2 pb-6">
+                        <div class="flex gap-2">
+                            <x-forms.select class="w-full" label="Repository" wire:model="selected_repository_id">
+                                @foreach ($repositories as $repo)
+                                    @if ($loop->first)
+                                        <option selected value="{{ data_get($repo, 'id') }}">
+                                            {{ data_get($repo, 'name') }}
+                                        </option>
+                                    @else
+                                        <option value="{{ data_get($repo, 'id') }}">{{ data_get($repo, 'name') }}
+                                        </option>
+                                    @endif
+                                @endforeach
+                            </x-forms.select>
+                        </div>
                         <x-forms.button wire:click.prevent="loadBranches"> Load Repository </x-forms.button>
                     </div>
                 @else
                     <div>No repositories found. Check your GitHub App configuration.</div>
                 @endif
                 @if ($branches->count() > 0)
+                    <h2 class="text-lg font-bold">Configuration</h2>
                     <div class="flex flex-col gap-2 pb-6">
                         <form class="flex flex-col" wire:submit='submit'>
                             <div class="flex flex-col gap-2 pb-6">
@@ -92,14 +95,25 @@
                                     @endif
                                 </div>
                                 @if ($build_pack === 'dockercompose')
-                                    <x-forms.input placeholder="/" wire:model.blur="base_directory"
-                                        label="Base Directory"
+                                    <div x-data="{ baseDir: '{{ $base_directory }}', composeLocation: '{{ $docker_compose_location }}' }" class="gap-2 flex flex-col">
+                                        <x-forms.input placeholder="/" wire:model.blur="base_directory"
+                                            label="Base Directory"
+                                            helper="Directory to use as root. Useful for monorepos."
+                                            x-model="baseDir" />
+                                        <x-forms.input placeholder="/docker-compose.yaml"
+                                            wire:model.blur="docker_compose_location" label="Docker Compose Location"
+                                            helper="It is calculated together with the Base Directory."
+                                            x-model="composeLocation" />
+                                        <div class="pt-2">
+                                            <span>
+                                                Compose file location in your repository: </span><span
+                                                class='dark:text-warning'
+                                                x-text='(baseDir === "/" ? "" : baseDir) + (composeLocation.startsWith("/") ? composeLocation : "/" + composeLocation)'></span>
+                                        </div>
+                                    </div>
+                                @else
+                                    <x-forms.input wire:model="base_directory" label="Base Directory"
                                         helper="Directory to use as root. Useful for monorepos." />
-                                    <x-forms.input placeholder="/docker-compose.yaml" id="docker_compose_location"
-                                        label="Docker Compose Location"
-                                        helper="It is calculated together with the Base Directory:<br><span class='dark:text-warning'>{{ Str::start($base_directory . $docker_compose_location, '/') }}</span>" />
-                                    Compose file location in your repository:<span
-                                        class='dark:text-warning'>{{ Str::start($base_directory . $docker_compose_location, '/') }}</span>
                                 @endif
                                 @if ($show_is_static)
                                     <x-forms.input type="number" id="port" label="Port" :readonly="$is_static || $build_pack === 'static'"

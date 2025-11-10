@@ -25,15 +25,15 @@
         </label>
     @endif
     @if ($useMonacoEditor)
-        <x-forms.monaco-editor id="{{ $id }}" language="{{ $monacoEditorLanguage }}" name="{{ $name }}"
-            name="{{ $id }}" model="{{ $value ?? $id }}" wire:model="{{ $value ?? $id }}"
-            readonly="{{ $readonly }}" label="dockerfile" />
+        <x-forms.monaco-editor id="{{ $modelBinding }}" language="{{ $monacoEditorLanguage }}" name="{{ $name }}"
+            name="{{ $modelBinding }}" model="{{ $value ?? $modelBinding }}" wire:model="{{ $value ?? $modelBinding }}"
+            readonly="{{ $readonly }}" label="dockerfile" autofocus="{{ $autofocus }}" />
     @else
         @if ($type === 'password')
             <div class="relative" x-data="{ type: 'password' }">
                 @if ($allowToPeak)
                     <div x-on:click="changePasswordFieldType"
-                        class="absolute inset-y-0 right-0 flex items-center h-6 pt-2 pr-2 cursor-pointer hover:dark:text-white">
+                        class="absolute inset-y-0 right-0 flex items-center h-6 pt-2 pr-2 cursor-pointer dark:hover:text-white">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" stroke-width="1.5"
                             stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                             <path stroke="none" d="M0 0h24v24H0z" fill="none" />
@@ -45,35 +45,34 @@
                 @endif
                 <input x-cloak x-show="type === 'password'" value="{{ $value }}"
                     {{ $attributes->merge(['class' => $defaultClassInput]) }} @required($required)
-                    @if ($id !== 'null') wire:model={{ $id }} @endif
-                    wire:dirty.class.remove='dark:focus:ring-coolgray-300 dark:ring-coolgray-300'
-                    wire:dirty.class="dark:focus:ring-warning dark:ring-warning" wire:loading.attr="disabled"
-                    type="{{ $type }}" @readonly($readonly) @disabled($disabled) id="{{ $id }}"
+                    @if ($modelBinding !== 'null') wire:model={{ $modelBinding }} wire:dirty.class="dark:border-l-warning border-l-coollabs border-l-4" @endif
+                    wire:loading.attr="disabled"
+                    type="{{ $type }}" @readonly($readonly) @disabled($disabled) id="{{ $htmlId }}"
                     name="{{ $name }}" placeholder="{{ $attributes->get('placeholder') }}"
                     aria-placeholder="{{ $attributes->get('placeholder') }}">
                 <textarea minlength="{{ $minlength }}" maxlength="{{ $maxlength }}" x-cloak x-show="type !== 'password'"
                     placeholder="{{ $placeholder }}" {{ $attributes->merge(['class' => $defaultClass]) }}
-                    @if ($realtimeValidation) wire:model.debounce.200ms="{{ $id }}"
+                    @if ($realtimeValidation) wire:model.debounce.200ms="{{ $modelBinding }}" wire:dirty.class="dark:border-l-warning border-l-coollabs border-l-4"
                 @else
-            wire:model={{ $value ?? $id }}
-                     wire:dirty.class.remove='dark:focus:ring-coolgray-300 dark:ring-coolgray-300' wire:dirty.class="dark:focus:ring-warning dark:ring-warning" @endif
-                    @disabled($disabled) @readonly($readonly) @required($required) id="{{ $id }}"
-                    name="{{ $name }}" name={{ $id }}></textarea>
+            wire:model={{ $value ?? $modelBinding }} wire:dirty.class="dark:border-l-warning border-l-coollabs border-l-4" @endif
+                    @disabled($disabled) @readonly($readonly) @required($required) id="{{ $htmlId }}"
+                    name="{{ $name }}" name={{ $modelBinding }}
+                    @if ($autofocus) x-ref="autofocusInput" @endif></textarea>
 
             </div>
         @else
             <textarea minlength="{{ $minlength }}" maxlength="{{ $maxlength }}"
                 {{ $allowTab ? '@keydown.tab=handleKeydown' : '' }} placeholder="{{ $placeholder }}"
                 {{ !$spellcheck ? 'spellcheck=false' : '' }} {{ $attributes->merge(['class' => $defaultClass]) }}
-                @if ($realtimeValidation) wire:model.debounce.200ms="{{ $id }}"
+                @if ($realtimeValidation) wire:model.debounce.200ms="{{ $modelBinding }}" wire:dirty.class="dark:border-l-warning border-l-coollabs border-l-4"
         @else
-    wire:model={{ $value ?? $id }}
-    wire:dirty.class.remove='dark:focus:ring-coolgray-300 dark:ring-coolgray-300' wire:dirty.class="dark:focus:ring-warning dark:ring-warning" @endif
-                @disabled($disabled) @readonly($readonly) @required($required) id="{{ $id }}"
-                name="{{ $name }}" name={{ $id }}></textarea>
+    wire:model={{ $value ?? $modelBinding }} wire:dirty.class="dark:border-l-warning border-l-coollabs border-l-4" @endif
+                @disabled($disabled) @readonly($readonly) @required($required) id="{{ $htmlId }}"
+                name="{{ $name }}" name={{ $modelBinding }}
+                @if ($autofocus) x-ref="autofocusInput" @endif></textarea>
         @endif
     @endif
-    @error($id)
+    @error($modelBinding)
         <label class="label">
             <span class="text-red-500 label-text-alt">{{ $message }}</span>
         </label>

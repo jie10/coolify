@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use OpenApi\Attributes as OA;
 
 #[OA\Schema(
@@ -40,11 +41,9 @@ class ApplicationDeploymentQueue extends Model
 {
     protected $guarded = [];
 
-    public function application(): Attribute
+    public function application()
     {
-        return Attribute::make(
-            get: fn () => Application::find($this->application_id),
-        );
+        return $this->belongsTo(Application::class);
     }
 
     public function server(): Attribute
@@ -84,6 +83,47 @@ class ApplicationDeploymentQueue extends Model
         return str($this->commit_message)->value();
     }
 
+    private function redactSensitiveInfo($text)
+    {
+        $text = remove_iip($text);
+
+        $app = $this->application;
+        if (! $app) {
+            return $text;
+        }
+
+        $lockedVars = collect([]);
+
+        if ($app->environment_variables) {
+            $lockedVars = $lockedVars->merge(
+                $app->environment_variables
+                    ->where('is_shown_once', true)
+                    ->pluck('real_value', 'key')
+                    ->filter()
+            );
+        }
+
+        if ($this->pull_request_id !== 0 && $app->environment_variables_preview) {
+            $lockedVars = $lockedVars->merge(
+                $app->environment_variables_preview
+                    ->where('is_shown_once', true)
+                    ->pluck('real_value', 'key')
+                    ->filter()
+            );
+        }
+
+        foreach ($lockedVars as $key => $value) {
+            $escapedValue = preg_quote($value, '/');
+            $text = preg_replace(
+                '/'.$escapedValue.'/',
+                REDACTED,
+                $text
+            );
+        }
+
+        return $text;
+    }
+
     public function addLogEntry(string $message, string $type = 'stdout', bool $hidden = false)
     {
         if ($type === 'error') {
@@ -95,23 +135,29 @@ class ApplicationDeploymentQueue extends Model
         }
         $newLogEntry = [
             'command' => null,
-            'output' => remove_iip($message),
+            'output' => $this->redactSensitiveInfo($message),
             'type' => $type,
             'timestamp' => Carbon::now('UTC'),
             'hidden' => $hidden,
             'batch' => 1,
         ];
-        if ($this->logs) {
-            $previousLogs = json_decode($this->logs, associative: true, flags: JSON_THROW_ON_ERROR);
-            $newLogEntry['order'] = count($previousLogs) + 1;
-            $previousLogs[] = $newLogEntry;
-            $this->update([
-                'logs' => json_encode($previousLogs, flags: JSON_THROW_ON_ERROR),
-            ]);
-        } else {
-            $this->update([
-                'logs' => json_encode([$newLogEntry], flags: JSON_THROW_ON_ERROR),
-            ]);
-        }
+
+        // Use a transaction to ensure atomicity
+        DB::transaction(function () use ($newLogEntry) {
+            // Reload the model to get the latest logs
+            $this->refresh();
+
+            if ($this->logs) {
+                $previousLogs = json_decode($this->logs, associative: true, flags: JSON_THROW_ON_ERROR);
+                $newLogEntry['order'] = count($previousLogs) + 1;
+                $previousLogs[] = $newLogEntry;
+                $this->logs = json_encode($previousLogs, flags: JSON_THROW_ON_ERROR);
+            } else {
+                $this->logs = json_encode([$newLogEntry], flags: JSON_THROW_ON_ERROR);
+            }
+
+            // Save without triggering events to prevent potential race conditions
+            $this->saveQuietly();
+        });
     }
 }

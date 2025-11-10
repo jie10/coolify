@@ -2,14 +2,15 @@
 
 namespace App\Models;
 
+use App\Traits\ClearsGlobalSearchCache;
+use App\Traits\HasSafeStringAttribute;
 use Illuminate\Database\Eloquent\Casts\Attribute;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class StandaloneMongodb extends BaseModel
 {
-    use HasFactory, SoftDeletes;
+    use ClearsGlobalSearchCache, HasFactory, HasSafeStringAttribute, SoftDeletes;
 
     protected $guarded = [];
 
@@ -24,7 +25,6 @@ class StandaloneMongodb extends BaseModel
                 'host_path' => null,
                 'resource_id' => $database->id,
                 'resource_type' => $database->getMorphClass(),
-                'is_readonly' => true,
             ]);
             LocalPersistentVolume::create([
                 'name' => 'mongodb-db-'.$database->uuid,
@@ -32,7 +32,6 @@ class StandaloneMongodb extends BaseModel
                 'host_path' => null,
                 'resource_id' => $database->id,
                 'resource_type' => $database->getMorphClass(),
-                'is_readonly' => true,
             ]);
         });
         static::forceDeleting(function ($database) {
@@ -46,6 +45,11 @@ class StandaloneMongodb extends BaseModel
                 $database->forceFill(['last_online_at' => now()]);
             }
         });
+    }
+
+    public static function ownedByCurrentTeam()
+    {
+        return StandaloneMongodb::whereRelation('environment.project.team', 'id', currentTeam()->id)->orderBy('name');
     }
 
     protected function serverStatus(): Attribute
@@ -98,7 +102,7 @@ class StandaloneMongodb extends BaseModel
         return database_configuration_dir()."/{$this->uuid}";
     }
 
-    public function delete_configurations()
+    public function deleteConfigurations()
     {
         $server = data_get($this, 'destination.server');
         $workdir = $this->workdir();
@@ -107,8 +111,9 @@ class StandaloneMongodb extends BaseModel
         }
     }
 
-    public function delete_volumes(Collection $persistentStorages)
+    public function deleteVolumes()
     {
+        $persistentStorages = $this->persistentStorages()->get() ?? collect();
         if ($persistentStorages->count() === 0) {
             return;
         }
@@ -177,6 +182,11 @@ class StandaloneMongodb extends BaseModel
         return data_get($this, 'is_log_drain_enabled', false);
     }
 
+    public function sslCertificates()
+    {
+        return $this->morphMany(SslCertificate::class, 'resource');
+    }
+
     public function link()
     {
         if (data_get($this, 'environment.project.uuid')) {
@@ -238,7 +248,19 @@ class StandaloneMongodb extends BaseModel
     protected function internalDbUrl(): Attribute
     {
         return new Attribute(
-            get: fn () => "mongodb://{$this->mongo_initdb_root_username}:{$this->mongo_initdb_root_password}@{$this->uuid}:27017/?directConnection=true",
+            get: function () {
+                $encodedUser = rawurlencode($this->mongo_initdb_root_username);
+                $encodedPass = rawurlencode($this->mongo_initdb_root_password);
+                $url = "mongodb://{$encodedUser}:{$encodedPass}@{$this->uuid}:27017/?directConnection=true";
+                if ($this->enable_ssl) {
+                    $url .= '&tls=true&tlsCAFile=/etc/mongo/certs/ca.pem';
+                    if (in_array($this->ssl_mode, ['verify-full'])) {
+                        $url .= '&tlsCertificateKeyFile=/etc/mongo/certs/server.pem';
+                    }
+                }
+
+                return $url;
+            },
         );
     }
 
@@ -247,7 +269,21 @@ class StandaloneMongodb extends BaseModel
         return new Attribute(
             get: function () {
                 if ($this->is_public && $this->public_port) {
-                    return "mongodb://{$this->mongo_initdb_root_username}:{$this->mongo_initdb_root_password}@{$this->destination->server->getIp}:{$this->public_port}/?directConnection=true";
+                    $serverIp = $this->destination->server->getIp;
+                    if (empty($serverIp)) {
+                        return null;
+                    }
+                    $encodedUser = rawurlencode($this->mongo_initdb_root_username);
+                    $encodedPass = rawurlencode($this->mongo_initdb_root_password);
+                    $url = "mongodb://{$encodedUser}:{$encodedPass}@{$serverIp}:{$this->public_port}/?directConnection=true";
+                    if ($this->enable_ssl) {
+                        $url .= '&tls=true&tlsCAFile=/etc/mongo/certs/ca.pem';
+                        if (in_array($this->ssl_mode, ['verify-full'])) {
+                            $url .= '&tlsCertificateKeyFile=/etc/mongo/certs/server.pem';
+                        }
+                    }
+
+                    return $url;
                 }
 
                 return null;
@@ -337,6 +373,13 @@ class StandaloneMongodb extends BaseModel
     public function environment_variables()
     {
         return $this->morphMany(EnvironmentVariable::class, 'resourceable')
-            ->orderBy('key', 'asc');
+            ->orderByRaw("
+                CASE 
+                    WHEN LOWER(key) LIKE 'service_%' THEN 1
+                    WHEN is_required = true AND (value IS NULL OR value = '') THEN 2
+                    ELSE 3
+                END,
+                LOWER(key) ASC
+            ");
     }
 }

@@ -2,14 +2,16 @@
 
 namespace App\Models;
 
+use App\Traits\ClearsGlobalSearchCache;
+use App\Traits\HasSafeStringAttribute;
 use Illuminate\Database\Eloquent\Casts\Attribute;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class StandaloneMariadb extends BaseModel
 {
-    use HasFactory, SoftDeletes;
+    use ClearsGlobalSearchCache, HasFactory, HasSafeStringAttribute, SoftDeletes;
 
     protected $guarded = [];
 
@@ -28,7 +30,6 @@ class StandaloneMariadb extends BaseModel
                 'host_path' => null,
                 'resource_id' => $database->id,
                 'resource_type' => $database->getMorphClass(),
-                'is_readonly' => true,
             ]);
         });
         static::forceDeleting(function ($database) {
@@ -42,6 +43,11 @@ class StandaloneMariadb extends BaseModel
                 $database->forceFill(['last_online_at' => now()]);
             }
         });
+    }
+
+    public static function ownedByCurrentTeam()
+    {
+        return StandaloneMariadb::whereRelation('environment.project.team', 'id', currentTeam()->id)->orderBy('name');
     }
 
     protected function serverStatus(): Attribute
@@ -94,7 +100,7 @@ class StandaloneMariadb extends BaseModel
         return database_configuration_dir()."/{$this->uuid}";
     }
 
-    public function delete_configurations()
+    public function deleteConfigurations()
     {
         $server = data_get($this, 'destination.server');
         $workdir = $this->workdir();
@@ -103,8 +109,9 @@ class StandaloneMariadb extends BaseModel
         }
     }
 
-    public function delete_volumes(Collection $persistentStorages)
+    public function deleteVolumes()
     {
+        $persistentStorages = $this->persistentStorages()->get() ?? collect();
         if ($persistentStorages->count() === 0) {
             return;
         }
@@ -218,7 +225,12 @@ class StandaloneMariadb extends BaseModel
     protected function internalDbUrl(): Attribute
     {
         return new Attribute(
-            get: fn () => "mysql://{$this->mariadb_user}:{$this->mariadb_password}@{$this->uuid}:3306/{$this->mariadb_database}",
+            get: function () {
+                $encodedUser = rawurlencode($this->mariadb_user);
+                $encodedPass = rawurlencode($this->mariadb_password);
+
+                return "mysql://{$encodedUser}:{$encodedPass}@{$this->uuid}:3306/{$this->mariadb_database}";
+            },
         );
     }
 
@@ -227,7 +239,14 @@ class StandaloneMariadb extends BaseModel
         return new Attribute(
             get: function () {
                 if ($this->is_public && $this->public_port) {
-                    return "mysql://{$this->mariadb_user}:{$this->mariadb_password}@{$this->destination->server->getIp}:{$this->public_port}/{$this->mariadb_database}";
+                    $serverIp = $this->destination->server->getIp;
+                    if (empty($serverIp)) {
+                        return null;
+                    }
+                    $encodedUser = rawurlencode($this->mariadb_user);
+                    $encodedPass = rawurlencode($this->mariadb_password);
+
+                    return "mysql://{$encodedUser}:{$encodedPass}@{$serverIp}:{$this->public_port}/{$this->mariadb_database}";
                 }
 
                 return null;
@@ -245,7 +264,7 @@ class StandaloneMariadb extends BaseModel
         return $this->morphMany(LocalFileVolume::class, 'resource');
     }
 
-    public function destination()
+    public function destination(): MorphTo
     {
         return $this->morphTo();
     }
@@ -253,7 +272,14 @@ class StandaloneMariadb extends BaseModel
     public function environment_variables()
     {
         return $this->morphMany(EnvironmentVariable::class, 'resourceable')
-            ->orderBy('key', 'asc');
+            ->orderByRaw("
+                CASE 
+                    WHEN LOWER(key) LIKE 'service_%' THEN 1
+                    WHEN is_required = true AND (value IS NULL OR value = '') THEN 2
+                    ELSE 3
+                END,
+                LOWER(key) ASC
+            ");
     }
 
     public function runtime_environment_variables()
@@ -269,6 +295,11 @@ class StandaloneMariadb extends BaseModel
     public function scheduledBackups()
     {
         return $this->morphMany(ScheduledDatabaseBackup::class, 'database');
+    }
+
+    public function sslCertificates()
+    {
+        return $this->morphMany(SslCertificate::class, 'resource');
     }
 
     public function getCpuMetrics(int $mins = 5)

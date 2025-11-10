@@ -2,14 +2,15 @@
 
 namespace App\Models;
 
+use App\Traits\ClearsGlobalSearchCache;
+use App\Traits\HasSafeStringAttribute;
 use Illuminate\Database\Eloquent\Casts\Attribute;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class StandaloneClickhouse extends BaseModel
 {
-    use HasFactory, SoftDeletes;
+    use ClearsGlobalSearchCache, HasFactory, HasSafeStringAttribute, SoftDeletes;
 
     protected $guarded = [];
 
@@ -28,7 +29,6 @@ class StandaloneClickhouse extends BaseModel
                 'host_path' => null,
                 'resource_id' => $database->id,
                 'resource_type' => $database->getMorphClass(),
-                'is_readonly' => true,
             ]);
         });
         static::forceDeleting(function ($database) {
@@ -42,6 +42,11 @@ class StandaloneClickhouse extends BaseModel
                 $database->forceFill(['last_online_at' => now()]);
             }
         });
+    }
+
+    public static function ownedByCurrentTeam()
+    {
+        return StandaloneClickhouse::whereRelation('environment.project.team', 'id', currentTeam()->id)->orderBy('name');
     }
 
     protected function serverStatus(): Attribute
@@ -94,7 +99,7 @@ class StandaloneClickhouse extends BaseModel
         return database_configuration_dir()."/{$this->uuid}";
     }
 
-    public function delete_configurations()
+    public function deleteConfigurations()
     {
         $server = data_get($this, 'destination.server');
         $workdir = $this->workdir();
@@ -103,8 +108,9 @@ class StandaloneClickhouse extends BaseModel
         }
     }
 
-    public function delete_volumes(Collection $persistentStorages)
+    public function deleteVolumes()
     {
+        $persistentStorages = $this->persistentStorages()->get() ?? collect();
         if ($persistentStorages->count() === 0) {
             return;
         }
@@ -163,6 +169,11 @@ class StandaloneClickhouse extends BaseModel
         return data_get($this, 'environment.project');
     }
 
+    public function sslCertificates()
+    {
+        return $this->morphMany(SslCertificate::class, 'resource');
+    }
+
     public function link()
     {
         if (data_get($this, 'environment.project.uuid')) {
@@ -218,7 +229,12 @@ class StandaloneClickhouse extends BaseModel
     protected function internalDbUrl(): Attribute
     {
         return new Attribute(
-            get: fn () => "clickhouse://{$this->clickhouse_admin_user}:{$this->clickhouse_admin_password}@{$this->uuid}:9000/{$this->clickhouse_db}",
+            get: function () {
+                $encodedUser = rawurlencode($this->clickhouse_admin_user);
+                $encodedPass = rawurlencode($this->clickhouse_admin_password);
+
+                return "clickhouse://{$encodedUser}:{$encodedPass}@{$this->uuid}:9000/{$this->clickhouse_db}";
+            },
         );
     }
 
@@ -227,7 +243,14 @@ class StandaloneClickhouse extends BaseModel
         return new Attribute(
             get: function () {
                 if ($this->is_public && $this->public_port) {
-                    return "clickhouse://{$this->clickhouse_admin_user}:{$this->clickhouse_admin_password}@{$this->destination->server->getIp}:{$this->public_port}/{$this->clickhouse_db}";
+                    $serverIp = $this->destination->server->getIp;
+                    if (empty($serverIp)) {
+                        return null;
+                    }
+                    $encodedUser = rawurlencode($this->clickhouse_admin_user);
+                    $encodedPass = rawurlencode($this->clickhouse_admin_password);
+
+                    return "clickhouse://{$encodedUser}:{$encodedPass}@{$serverIp}:{$this->public_port}/{$this->clickhouse_db}";
                 }
 
                 return null;
@@ -253,7 +276,14 @@ class StandaloneClickhouse extends BaseModel
     public function environment_variables()
     {
         return $this->morphMany(EnvironmentVariable::class, 'resourceable')
-            ->orderBy('key', 'asc');
+            ->orderByRaw("
+                CASE 
+                    WHEN LOWER(key) LIKE 'service_%' THEN 1
+                    WHEN is_required = true AND (value IS NULL OR value = '') THEN 2
+                    ELSE 3
+                END,
+                LOWER(key) ASC
+            ");
     }
 
     public function runtime_environment_variables()

@@ -8,7 +8,9 @@ use App\Notifications\Channels\SendsEmail;
 use App\Notifications\Channels\SendsPushover;
 use App\Notifications\Channels\SendsSlack;
 use App\Traits\HasNotificationSettings;
+use App\Traits\HasSafeStringAttribute;
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Notifications\Notifiable;
 use OpenApi\Attributes as OA;
@@ -36,7 +38,7 @@ use OpenApi\Attributes as OA;
 
 class Team extends Model implements SendsDiscord, SendsEmail, SendsPushover, SendsSlack
 {
-    use HasNotificationSettings, Notifiable;
+    use HasFactory, HasNotificationSettings, HasSafeStringAttribute, Notifiable;
 
     protected $guarded = [];
 
@@ -52,6 +54,7 @@ class Team extends Model implements SendsDiscord, SendsEmail, SendsPushover, Sen
             $team->slackNotificationSettings()->create();
             $team->telegramNotificationSettings()->create();
             $team->pushoverNotificationSettings()->create();
+            $team->webhookNotificationSettings()->create();
         });
 
         static::saving(function ($team) {
@@ -163,14 +166,17 @@ class Team extends Model implements SendsDiscord, SendsEmail, SendsPushover, Sen
         ];
     }
 
-    public function getRecipients($notification)
+    public function getRecipients(): array
     {
-        $recipients = data_get($notification, 'emails', null);
-        if (is_null($recipients)) {
-            return $this->members()->pluck('email')->toArray();
+        $recipients = $this->members()->pluck('email')->toArray();
+        $validatedEmails = array_filter($recipients, function ($email) {
+            return filter_var($email, FILTER_VALIDATE_EMAIL);
+        });
+        if (is_null($validatedEmails)) {
+            return [];
         }
 
-        return explode(',', $recipients);
+        return array_values($validatedEmails);
     }
 
     public function isAnyNotificationEnabled()
@@ -190,7 +196,6 @@ class Team extends Model implements SendsDiscord, SendsEmail, SendsPushover, Sen
     {
         $this->subscription->update([
             'stripe_subscription_id' => null,
-            'stripe_plan_id' => null,
             'stripe_cancel_at_period_end' => false,
             'stripe_invoice_paid' => false,
             'stripe_trial_already_ended' => false,
@@ -254,6 +259,11 @@ class Team extends Model implements SendsDiscord, SendsEmail, SendsPushover, Sen
         return $this->hasMany(PrivateKey::class);
     }
 
+    public function cloudProviderTokens()
+    {
+        return $this->hasMany(CloudProviderToken::class);
+    }
+
     public function sources()
     {
         $sources = collect([]);
@@ -302,5 +312,10 @@ class Team extends Model implements SendsDiscord, SendsEmail, SendsPushover, Sen
     public function pushoverNotificationSettings()
     {
         return $this->hasOne(PushoverNotificationSettings::class);
+    }
+
+    public function webhookNotificationSettings()
+    {
+        return $this->hasOne(WebhookNotificationSettings::class);
     }
 }

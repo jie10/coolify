@@ -30,6 +30,7 @@ class Advanced extends Component
             $this->server = Server::ownedByCurrentTeam()->whereUuid($server_uuid)->firstOrFail();
             $this->parameters = get_route_parameters();
             $this->syncData();
+
         } catch (\Throwable) {
             return redirect()->route('server.index');
         }
@@ -38,6 +39,7 @@ class Advanced extends Component
     public function syncData(bool $toModel = false)
     {
         if ($toModel) {
+            $this->authorize('update', $this->server);
             $this->validate();
             $this->server->settings->concurrent_builds = $this->concurrentBuilds;
             $this->server->settings->dynamic_timeout = $this->dynamicTimeout;
